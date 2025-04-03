@@ -107,11 +107,39 @@ class SCADADRLDetector:
             self.epsilon *= self.epsilon_decay
     
     def load(self, name):
-        self.model.load_weights(name)
-        self.update_target_model()
-
+    # Add .weights.h5 suffix if not already present
+      if not name.endswith('.weights.h5'):
+          if name.endswith('.h5'):
+              name = name.replace('.h5', '.weights.h5')
+          else:
+              name += '.weights.h5'
+      self.model.load_weights(name)
+      self.update_target_model()
+# Change in SCADADRLDetector.save method
     def save(self, name):
-        self.model.save_weights(name)
+      try:
+        try:
+            self.model.save(name)
+            print(f"Saved complete model to {name}")
+            return
+        except Exception as e:
+            print(f"Error saving complete model: {str(e)}")
+            
+        # Fallback to saving weights only
+        # Make sure the filename ends with .weights.h5
+        if not name.endswith('.weights.h5'):
+            if name.endswith('.h5'):
+                weights_name = name.replace('.h5', '.weights.h5')
+            else:
+                weights_name = name + '.weights.h5'
+        else:
+            weights_name = name
+            
+        self.model.save_weights(weights_name)
+        print(f"Saved model weights to {weights_name}")
+      except Exception as e:
+        print(f"Error saving model: {str(e)}")
+        raise
 
 
 def safe_read_csv(file_path, **kwargs):
@@ -462,40 +490,6 @@ def evaluate_model(agent, X_test, y_test, feature_names=None):
         return 0, 0, 0, 0
 
 
-def generate_synthetic_data(n_samples=10000, n_features=25):
-    """
-    Generate synthetic SCADA data if the real dataset is problematic
-    """
-    print(f"Generating synthetic SCADA dataset with {n_samples} samples...")
-    
-    # Create random features
-    X = np.random.randn(n_samples, n_features)
-    
-    # Create target - some function of the features with noise
-    weights = np.random.uniform(-1, 1, n_features)
-    bias = np.random.uniform(-1, 1)
-    y_prob = 1 / (1 + np.exp(-(np.dot(X, weights) + bias)))
-    
-    # Add noise
-    y_prob += np.random.normal(0, 0.1, n_samples)
-    
-    # Convert to binary
-    y = (y_prob > 0.5).astype(int)
-    
-    # Split into train and test sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    # Create feature names
-    feature_names = [f"feature_{i}" for i in range(n_features)]
-    
-    # Create a simple scaler
-    scaler = StandardScaler()
-    scaler.fit(X_train)
-    
-    print(f"Generated dataset with {n_samples} samples and {n_features} features")
-    print(f"Class distribution: {np.bincount(y)}")
-    
-    return X_train, X_test, y_train, y_test, scaler, feature_names
 
 
 # Main execution function
@@ -516,118 +510,6 @@ def main():
     
     if use_real_data:
         print(f"Using dataset: {dataset_path}")
-    else:
-        print(f"Dataset not found at {dataset_path}")
-        print("Would you like to:")
-        print("1. Upload the dataset now")
-        print("2. Use a synthetic dataset for testing")
-        print("3. Provide a different path to the dataset")
-        
-        # Get user choice (this will run interactively in Colab)
-        choice = input("Enter your choice (1/2/3): ")
-        
-        if choice == "1":
-            # Code to help user upload dataset
-            print("\nPlease run the following code to upload your dataset:")
-            print("\nfrom google.colab import files")
-            print("uploaded = files.upload()")
-            print("# Move the uploaded file to the expected location")
-            print("!mkdir -p /content/drive/MyDrive")
-            print("!mv wustl_iiot_2021.csv /content/drive/MyDrive/")
-            return
-        elif choice == "2":
-            # Use synthetic data
-            print("Using synthetic data for training and testing...")
-            try:
-                X_train, X_test, y_train, y_test, scaler, feature_names = generate_synthetic_data()
-                
-                # Initialize the DRL detector
-                state_size = X_train.shape[1]
-                action_size = 2
-                agent = SCADADRLDetector(state_size, action_size)
-                
-                # Training loop - simplified for synthetic data
-                print("Training DRL model on synthetic data...")
-                
-                # Create directory for checkpoints
-                checkpoint_dir = f"{OUTPUT_DIR}/checkpoints"
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                
-                # Training loop
-                train_acc = []
-                best_accuracy = 0.0
-                
-                for episode in range(episodes):
-                    # Randomly sample from training data
-                    indices = np.random.randint(0, X_train.shape[0], size=batch_size*10)
-                    
-                    for i in indices:
-                        state = X_train[i].reshape(1, -1)
-                        action = agent.act(state)
-                        
-                        # Calculate reward
-                        true_label = y_train[i]
-                        reward = 1 if action == true_label else -1
-                        
-                        # Next state is the same as current state in this case
-                        next_state = state
-                        done = True
-                        
-                        # Store experience and train
-                        agent.remember(state, action, reward, next_state, done)
-                        agent.replay(batch_size)
-                    
-                    # Update target network
-                    if episode % target == 0:
-                        agent.update_target_model()
-                    
-                    # Evaluate on a subset
-                    eval_size = min(1000, X_train.shape[0])
-                    eval_indices = np.random.choice(X_train.shape[0], eval_size, replace=False)
-                    
-                    eval_states = X_train[eval_indices]
-                    predictions = np.argmax(agent.model.predict(eval_states, verbose=0), axis=1)
-                    true_labels = y_train[eval_indices]
-                    
-                    accuracy = accuracy_score(true_labels, predictions)
-                    train_acc.append(accuracy)
-                    
-                    print(f"Episode: {episode+1}/{episodes}, Accuracy: {accuracy:.4f}, Epsilon: {agent.epsilon:.4f}")
-                    
-                    if accuracy > best_accuracy:
-                        best_accuracy = accuracy
-                        agent.save(f"{checkpoint_dir}/best_model.h5")
-                        print(f"New best model saved with accuracy: {best_accuracy:.4f}")
-                
-                # Load best model and evaluate
-                agent.load(f"{checkpoint_dir}/best_model.h5")
-                
-                # Plot training accuracy
-                plt.figure(figsize=(10, 6))
-                plt.plot(train_acc)
-                plt.title('Training Accuracy over Episodes (Synthetic Data)')
-                plt.xlabel('Episode')
-                plt.ylabel('Accuracy')
-                plt.savefig(f'{OUTPUT_DIR}/training_accuracy_synthetic.png')
-                plt.show()
-                
-                # Evaluate
-                evaluate_model(agent, X_test, y_test, feature_names)
-                return
-                
-            except Exception as e:
-                print(f"Error with synthetic data: {str(e)}")
-                traceback.print_exc()
-                return
-        elif choice == "3":
-            # Ask for different path
-            dataset_path = input("Enter the full path to your dataset: ")
-            if not os.path.exists(dataset_path):
-                print(f"Dataset not found at {dataset_path}. Please check the path and try again.")
-                return
-        else:
-            print("Invalid choice. Exiting.")
-            return
     
     # Train model on real data
     try:
@@ -663,13 +545,7 @@ def main():
         traceback.print_exc()
         
         # Ask if user wants to try synthetic data instead
-        try_synthetic = input("\nWould you like to try with synthetic data instead? (y/n): ")
-        if try_synthetic.lower() == 'y':
-            print("\nRestarting with synthetic data...")
-            # Set use_real_data to False to trigger synthetic data path
-            choice = "2"
-            # Call main again (recursive but with a clear exit path)
-            main()
+  
 if __name__ == "__main__":
     main()
 # To execute the code in Colab, uncomment this line
